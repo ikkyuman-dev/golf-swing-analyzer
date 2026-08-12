@@ -1,0 +1,56 @@
+import { POSE_CONNECTIONS, poseMetrics } from './pose-geometry.js';
+
+const TASKS_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/+esm';
+const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm';
+const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+
+export async function createPoseService() {
+  const { FilesetResolver, PoseLandmarker } = await import(TASKS_URL);
+  const vision = await FilesetResolver.forVisionTasks(WASM_URL);
+  const landmarker = await PoseLandmarker.createFromOptions(vision, {
+    baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
+    runningMode: 'VIDEO', numPoses: 1,
+    minPoseDetectionConfidence: 0.5,
+    minPosePresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+  return {
+    detect(video, timestamp) { return landmarker.detectForVideo(video, timestamp); },
+    close() { landmarker.close(); }
+  };
+}
+
+export function drawPose(canvas, video, landmarks, visible = true) {
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
+    canvas.width = width * dpr; canvas.height = height * dpr;
+  }
+  const context = canvas.getContext('2d');
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, width, height);
+  if (!visible || !landmarks?.length || !video.videoWidth) return;
+  const scale = Math.min(width / video.videoWidth, height / video.videoHeight);
+  const drawWidth = video.videoWidth * scale;
+  const drawHeight = video.videoHeight * scale;
+  const offsetX = (width - drawWidth) / 2;
+  const offsetY = (height - drawHeight) / 2;
+  const xy = point => ({ x: offsetX + point.x * drawWidth, y: offsetY + point.y * drawHeight });
+  context.lineCap = 'round'; context.lineJoin = 'round'; context.lineWidth = 3;
+  context.strokeStyle = '#d9ef75'; context.shadowColor = 'rgba(0,0,0,.55)'; context.shadowBlur = 3;
+  for (const [from, to] of POSE_CONNECTIONS) {
+    if ((landmarks[from].visibility ?? 1) < .45 || (landmarks[to].visibility ?? 1) < .45) continue;
+    const a = xy(landmarks[from]); const b = xy(landmarks[to]);
+    context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
+  }
+  context.shadowBlur = 0;
+  for (const index of new Set(POSE_CONNECTIONS.flat())) {
+    if ((landmarks[index].visibility ?? 1) < .45) continue;
+    const point = xy(landmarks[index]);
+    context.beginPath(); context.arc(point.x, point.y, 5, 0, Math.PI * 2);
+    context.fillStyle = '#ffffff'; context.fill(); context.lineWidth = 2; context.strokeStyle = '#1d694f'; context.stroke();
+  }
+}
+
+export { poseMetrics };
