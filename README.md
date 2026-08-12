@@ -19,6 +19,14 @@ npm install
 npm run dev
 ```
 
+`http://localhost:4173` を開いてください。ES ModulesとMediaPipe WASMを利用するため、`index.html`を直接開かずHTTPサーバー経由で実行します。
+
+## GitHub Pages
+
+`main`へのpush時に`.github/workflows/pages.yml`がテストと静的ビルドを実行し、`dist/`をGitHub Pagesへデプロイします。リポジトリの **Settings → Pages → Source** は **GitHub Actions** を選択してください。
+
+すべてのアプリ内パスは相対パスで、プロジェクトサイト（`https://<user>.github.io/<repository>/`）のサブパスでも動作します。ビルドは`.nojekyll`も生成するため、JavaScriptモジュールをそのまま配信できます。
+
 ## 構成
 
 - `app.js`: 動画アップロード、プレイヤー、姿勢分析、レビューUI
