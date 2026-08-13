@@ -3,13 +3,39 @@ import { poseMetrics } from './pose-geometry.js';
 const avg = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 const midpoint = (points, a, b) => points?.[a] && points?.[b] ? avg(points[a], points[b]) : null;
 const distance = (a, b) => a && b ? Math.hypot(a.x - b.x, a.y - b.y) : null;
-const abs = value => value == null ? null : Math.abs(value);
 const levelTilt = value => {
   if (value == null) return null;
   let a = Math.abs(value) % 180;
   if (a > 90) a = 180 - a;
   return a;
 };
+
+function sideLevel(points, leftIndex, rightIndex) {
+  const left = points?.[leftIndex], right = points?.[rightIndex];
+  if (!left || !right) return null;
+  const angle = levelTilt(Math.atan2(right.y - left.y, right.x - left.x) * 180 / Math.PI);
+  const epsilon = 0.004;
+  if (Math.abs(left.y - right.y) < epsilon) return { angle, higher: null, lower: null };
+  return left.y < right.y
+    ? { angle, higher: '左', lower: '右' }
+    : { angle, higher: '右', lower: '左' };
+}
+
+function directionalLevelText(kind, level, goodLimit) {
+  if (!level) return null;
+  const angle = Math.round(level.angle ?? 0);
+  if (!level.higher) return {
+    good: true,
+    goodText: `${kind}はほぼ水平です`,
+    improveText: `${kind}はほぼ水平です`
+  };
+  const good = level.angle <= goodLimit;
+  return {
+    good,
+    goodText: `${kind}は${level.higher}側が約${angle}°高い状態で、大きな左右差はありません`,
+    improveText: `${kind}は${level.higher}側が約${angle}°高く、${level.lower}側が低くなっています。${level.higher}側を少し下げる、または${level.lower}側を少し上げる方向で左右差を確認しましょう`
+  };
+}
 
 function enriched(sample) {
   const p = sample.landmarks;
@@ -26,6 +52,8 @@ function enriched(sample) {
       ...m,
       shoulderLevel: levelTilt(m.shoulder),
       hipLevel: levelTilt(m.hip),
+      shoulderSides: sideLevel(p, 11, 12),
+      hipSides: sideLevel(p, 23, 24),
       headOffset: nose && hips ? nose.x - hips.x : null,
       stanceWidth: p?.[27] && p?.[28] ? distance(p[27], p[28]) : null,
       shoulderWidth: p?.[11] && p?.[12] ? distance(p[11], p[12]) : null
@@ -101,13 +129,20 @@ function addFinding(findings, good, goodText, improveText) {
   findings.push({ good, text: good ? goodText : improveText });
 }
 
+function addDirectionalFinding(findings, kind, level, limit) {
+  const info = directionalLevelText(kind, level, limit);
+  if (info) addFinding(findings, info.good, info.goodText, info.improveText);
+}
+
 export function evaluatePhase(name, sample) {
   if (!sample) return { score: null, findings: [], summary: '判定できませんでした' };
-  const m = sample.metrics || enriched(sample).metrics;
+  const enrichedSample = sample.metrics?.shoulderSides ? sample : enriched(sample);
+  const m = enrichedSample.metrics;
   const findings = [];
 
   if (name === 'address') {
-    if (m.shoulderLevel != null) addFinding(findings, m.shoulderLevel <= 12, `肩の傾きは水平から約${Math.round(m.shoulderLevel)}°で安定しています`, `肩の傾きが約${Math.round(m.shoulderLevel)}°あります。カメラが水平かも含めて確認しましょう`);
+    if (m.shoulderSides) addDirectionalFinding(findings, '肩ライン', m.shoulderSides, 12);
+    if (m.hipSides) addDirectionalFinding(findings, '腰ライン', m.hipSides, 10);
     if (m.leftKnee != null && m.rightKnee != null) {
       const diff = Math.abs(m.leftKnee - m.rightKnee);
       addFinding(findings, diff <= 15, `左右の膝角度差は約${Math.round(diff)}°でバランスが取れています`, `左右の膝角度差が約${Math.round(diff)}°あります。構えの左右バランスを確認しましょう`);
@@ -115,22 +150,25 @@ export function evaluatePhase(name, sample) {
   } else if (name === 'top') {
     const extension = Math.max(m.leftElbow ?? 0, m.rightElbow ?? 0);
     if (extension) addFinding(findings, extension >= 150, `片側の腕が約${Math.round(extension)}°まで伸びています`, `腕の伸びは約${Math.round(extension)}°です。無理に伸ばさず、再現性を確認しましょう`);
-    if (m.shoulderLevel != null) addFinding(findings, m.shoulderLevel <= 30, `肩ラインの傾きは約${Math.round(m.shoulderLevel)}°です`, `肩ラインの傾きが約${Math.round(m.shoulderLevel)}°あります。撮影角度の影響も確認しましょう`);
+    if (m.shoulderSides) addDirectionalFinding(findings, '肩ライン', m.shoulderSides, 30);
   } else if (name === 'downswing') {
     if (m.leftElbow != null && m.rightElbow != null) {
       const bent = Math.min(m.leftElbow, m.rightElbow);
       addFinding(findings, bent >= 55 && bent <= 145, `切り返し中の肘角度は約${Math.round(bent)}°です`, `切り返し中の肘角度は約${Math.round(bent)}°です。動画で体との距離も合わせて確認しましょう`);
     }
+    if (m.shoulderSides) addDirectionalFinding(findings, '肩ライン', m.shoulderSides, 35);
   } else if (name === 'impact') {
     if (m.leftKnee != null && m.rightKnee != null) {
       const diff = Math.abs(m.leftKnee - m.rightKnee);
       addFinding(findings, diff >= 5 && diff <= 55, `インパクト時に左右の膝へ約${Math.round(diff)}°の差が出ています`, `左右の膝角度差は約${Math.round(diff)}°です。正面映像なら体重移動と合わせて確認しましょう`);
     }
     if (m.headOffset != null) addFinding(findings, Math.abs(m.headOffset) <= 0.18, '頭と腰の中心位置が大きく離れていません', '頭と腰の中心に横方向の差があります。アドレス時との比較で確認しましょう');
+    if (m.shoulderSides) addDirectionalFinding(findings, '肩ライン', m.shoulderSides, 35);
+    if (m.hipSides) addDirectionalFinding(findings, '腰ライン', m.hipSides, 30);
   } else if (name === 'finish') {
     const extension = Math.max(m.leftElbow ?? 0, m.rightElbow ?? 0);
     if (extension) addFinding(findings, extension >= 135, `フィニッシュで腕が約${Math.round(extension)}°まで伸びています`, `フィニッシュの腕角度は約${Math.round(extension)}°です。バランス良く止まれるかも確認しましょう`);
-    if (m.shoulderLevel != null) addFinding(findings, m.shoulderLevel <= 35, `肩ラインの傾きは約${Math.round(m.shoulderLevel)}°です`, `肩ラインの傾きが約${Math.round(m.shoulderLevel)}°あります。撮影角度も考慮してください`);
+    if (m.shoulderSides) addDirectionalFinding(findings, '肩ライン', m.shoulderSides, 35);
   }
 
   const valid = findings.length;
